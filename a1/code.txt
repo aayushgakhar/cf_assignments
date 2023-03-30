@@ -1,0 +1,186 @@
+import numpy as np
+import pandas as pd
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics import mean_absolute_error
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+
+# Load the data
+data = pd.read_csv('ml-100k/u.data', sep='\t', header=None,
+                   names=['user_id', 'item_id', 'rating', 'timestamp'])
+
+folds = []
+for i in range(1, 6):
+    train = pd.read_csv('ml-100k/u' + str(i) + '.base', sep='\t', header=None,
+                        names=['user_id', 'item_id', 'rating', 'timestamp'])
+    test = pd.read_csv('ml-100k/u' + str(i) + '.test', sep='\t', header=None,
+                       names=['user_id', 'item_id', 'rating', 'timestamp'])
+    folds.append({'train':train,'test': test})
+
+
+# Define the user-based recommender system
+def user_based_recommendation(train_data, test_data, K):
+    # Compute the user-item matrix for the training data
+    user_item_train = train_data.pivot(
+        index='user_id', columns='item_id', values='rating').fillna(0)
+
+    # Compute the mean rating for each user in the training data
+    user_means = train_data.groupby('user_id')['rating'].mean()
+    
+    global_mean = train_data['rating'].mean()
+
+    # Compute the cosine similarity between users
+    user_sim = cosine_similarity(user_item_train)
+
+    predicted_ratings = []
+    ratings = []
+    
+    for _, row in test_data.iterrows():
+        user_id = row['user_id']
+        item_id = row['item_id']
+        if user_id in user_item_train.index:
+            if item_id in user_item_train.columns:
+                user_item_train_sub = user_item_train.loc[:,item_id]
+                
+                users_rated_idx = user_item_train_sub[user_item_train_sub != 0].index
+                
+                user_ratings = user_item_train_sub[users_rated_idx]
+                
+                user_sims = user_sim[user_id-1][users_rated_idx-1]
+                
+                user_sims,user_ratings = zip(*sorted(
+                    (zip(user_sims, user_ratings)), reverse=True)[:K])
+                
+                user_ratings = list(user_ratings)
+                for i in range(len(user_ratings)):
+                    user_ratings[i] = user_ratings[i] - \
+                        user_means[users_rated_idx[i]]
+                
+                user_sims = np.array(user_sims)
+                user_ratings = np.array(user_ratings)
+                
+                predicted_rating = (
+                    user_ratings * user_sims).sum() / user_sims.sum()
+                predicted_ratings.append(predicted_rating + user_means[user_id])
+                ratings.append(row['rating'])
+            else:
+                predicted_ratings.append(user_means[user_id])
+                ratings.append(row['rating'])
+                
+        else:
+            predicted_ratings.append(global_mean)
+            ratings.append(row['rating'])
+    
+    mae = mean_absolute_error(ratings , predicted_ratings)
+    return mae
+    
+def item_based_recommendation(train_data, test_data, K):
+    # Compute the user-item matrix for the training data
+    user_item_train = train_data.pivot(
+        index='user_id', columns='item_id', values='rating').fillna(0)
+    
+    item_sim = cosine_similarity(user_item_train.T)
+    global_mean = train_data['rating'].mean()
+    
+    item_means = train_data.groupby('item_id')['rating'].mean()
+    
+    predicted_ratings = []
+    ratings = []
+    
+    for _, row in test_data.iterrows():
+        user_id = row['user_id']
+        item_id = row['item_id']
+        
+        
+        if item_id in user_item_train.columns:
+            if user_id in user_item_train.index:
+                user_item_train_sub = user_item_train.loc[user_id,:]
+
+                item_idx = user_item_train_sub[user_item_train_sub != 0].index
+                
+                real_idx = []
+
+                for i in item_idx:
+                    real_idx.append(user_item_train_sub.index.get_loc(i))
+                    
+                # item_idx = real_idx
+
+                item_ratings = user_item_train_sub[item_idx]
+                
+                
+                real_idx = np.array(real_idx)
+                # item_sims = item_sim[item_id-1][item_idx-1]
+                item_sims = item_sim[user_item_train_sub.index.get_loc(
+                    item_id)][real_idx]
+
+                item_sims, item_ratings = zip(*sorted(
+                    (zip(item_sims, item_ratings)), reverse=True)[:K])
+
+                item_ratings = list(item_ratings)
+                for i in range(len(item_ratings)):
+                    item_ratings[i] = item_ratings[i] - \
+                        item_means[item_idx[i]]
+
+                item_sims = np.array(item_sims)
+                item_ratings = np.array(item_ratings)
+
+                predicted_rating = (
+                    item_ratings * item_sims).sum() / item_sims.sum()
+                predicted_ratings.append(
+                    predicted_rating + item_means[item_id])
+                ratings.append(row['rating'])
+                
+                
+                
+            else:
+                predicted_ratings.append(item_means[item_id])
+                ratings.append(row['rating'])
+        
+        else:
+            predicted_ratings.append(global_mean)
+            ratings.append(row['rating'])
+            
+    mae = mean_absolute_error(ratings, predicted_ratings)
+    return mae
+
+def cross_validation(data, algorithm, K):
+    # Initialize the list of MAEs
+    maes = []
+
+    # For each fold
+    for fold in data:
+        # Compute the MAE for the algorithm and the fold
+        mae = algorithm(fold['train'], fold['test'], K)
+
+        # Add the MAE to the list of MAEs
+        maes.append(mae)
+
+    avg_mae = np.mean(maes)
+    maes.append(avg_mae)
+    
+    # Return the list of MAEs
+    return maes
+
+
+K = [10, 20, 30, 40, 50]
+
+user_maes = []
+item_maes = []
+for k in K:
+    user_maes.append(cross_validation(folds, user_based_recommendation, k))
+    item_maes.append(cross_validation(folds, item_based_recommendation, k))
+
+
+user_maes = np.array(user_maes)
+results = pd.DataFrame({'K': K, 'Fold 1': user_maes[:,0], 'Fold 2': user_maes[:,1], 'Fold 3': user_maes[:,2], 'Fold 4': user_maes[:,3], 'Fold 5': user_maes[:,4], 'Average': user_maes[:,5]})
+results.set_index('K', inplace=True)
+results
+
+
+
+item_maes = np.array(item_maes)
+results = pd.DataFrame({'K': K, 'Fold 1': item_maes[:, 0], 'Fold 2': item_maes[:, 1], 'Fold 3': item_maes[:,
+                       2], 'Fold 4': item_maes[:, 3], 'Fold 5': item_maes[:, 4], 'Average': item_maes[:, 5]})
+results.set_index('K', inplace=True)
+results
